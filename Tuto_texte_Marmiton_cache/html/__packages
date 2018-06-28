@@ -12,3 +12,8 @@ xml2
 rvest
 ggraph
 igraph
+tidytext
+proustr
+RColorBrewer
+wordcloud
+widyr

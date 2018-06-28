@@ -5,7 +5,7 @@ output: html_document
 
 Dans ce projet je vais
 
-- sélectionner au hasard parmi les environ 9000 recettes de dessert que comptent le site Marmiton, 1000 fiches-recettes
+- sélectionner au hasard 100 recettes parmi les environ 9000 recettes de dessert que comptent le site Marmiton
 - scraper certaines informations issues de ces fiche-recettes (notamment, les informations concernant les ingrédients de la recette et les commentaires)
 
 # Packages
@@ -13,12 +13,16 @@ Dans ce projet je vais
 Voici les packages dont j'aurai besoin pour ce projet
 
 ```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
 library(tidyverse)
 library(purrr)
 library(rvest)
 library(tidytext)
 library(proustr)
 library(wordcloud)
+library(widyr)
+library(igraph)
+library(ggraph)
 ```
 
 # Web scraping et mise en forme des données
@@ -36,7 +40,7 @@ etc.
 
 Je vais donc commencer par créer un vecteur `pages` qui liste l'ensemble des pages, qui elles-mêmes listent les recettes de dessert:
 
-```{r, cache=TRUE}
+```{r pages, cache=TRUE}
 pages <- str_c("http://www.marmiton.org/recettes/recherche.aspx?aqt=dessert&dt=dessert&pht=1",
                c("",str_c("&start=",seq(12,9000,by=12))))
 pages[1:4]
@@ -110,7 +114,7 @@ recup_ingredients(recettes_sample$urls[24]) %>%
   select(-url)
 ```
 
-On applique alors itérativement la fonction `recup_ingredients` à l'ensemble des recettes listées dans `recettes_sample`.
+On applique alors itérativement la fonction `recup_ingredients()` à l'ensemble des recettes listées dans `recettes_sample`.
 
 Le résultat est enregistré dans le fichier "data/tib_ingredients.csv".
 
@@ -208,7 +212,13 @@ select(tib_ingredients,-url) %>%
 
 ## Nettoyer la table des commentaires
 
-Je nettoie la table `tib_commentaires`:
+Je nettoie la table `tib_commentaires`. Je vais notamment m'intéresser à la variable `texte` qui contient un certain nombres d'informations qu'il serait intéressant de distinguer, mais qui ne correspondent pas à différents éléments du html. Je vais donc séparer ces éléments en utilisant des expressions régulières...
+
+Les trois étapes de nettoyage correspondent à  
+
+- remplacement par "_" du pattern "retour-chariot"-"retour à la ligne"-"zero à plusieurs espaces" 
+- extraction des caractères (tous caractères sauf "_", zéro à plusieurs fois) suivis par un "\_" et la fin de la chaîne de caractère
+- remplacement par un espace des apostrophes ("'" ou "’")
 
 
 ```{r clean_tib_commentaires}
@@ -221,13 +231,15 @@ tib_commentaires <- tib_commentaires %>%
 # Traitement du langage naturel (sur les commentaires)
 
 
-
 ## Tokenization
+
+Je crée la table `tib_mots` à partir de `tib_commentaires`, en tokenisant les commentaires en mots (j'en profite pour lui demander de tout mettre en minuscules avec l'argument `to_lower=TRUE`.
 
 ```{r tokenize_instructions}
 tib_mots <- unnest_tokens(tib_commentaires,
                           output="word",
-                          input="texte")
+                          input="texte",
+                          to_lower=TRUE)
 
 tib_mots %>% 
   select(recette,word) %>% 
@@ -235,9 +247,11 @@ tib_mots %>%
 ```
 
 
-## Commentaires: mots-outils
+## Commentaires: mots vides
 
-```{r}
+Je retire les mots vides (en français), et je filtre également les mots pour retirer tous les nombres (pattern `\\d`).
+
+```{r stopwords}
 tib_mots <- anti_join(tib_mots,
                       proust_stopwords()) %>% 
   filter(!str_detect(word,"\\d+"))
@@ -249,7 +263,9 @@ tib_mots %>%
 
 ## Stemming
 
-```{r}
+Je teste la racinisation des mots de `tib_mots`:
+
+```{r stemming}
 tib_racines <-  pr_stem_words(tib_mots,
                               word)
 tib_racines %>% 
@@ -259,118 +275,173 @@ tib_racines %>%
 
 ## Lemmatisation
 
-```{r}
-Lexique382=read.delim("Lexique382/Lexique382.txt", encoding="UTF-8")
-Lexique382=select(Lexique382,
-                  word= X1_ortho,
-                  lemme= X3_lemme,
-                  type= X4_cgram)
-print(sample_n(Lexique382,20))
-tib_lemmes=left_join(tib_mots,
-                     Lexique382,
-                     by="word") %>% 
-  group_by(recette,word) %>% 
-  mutate(lemme=lemme[1]) %>% 
-  distinct()
+Je peux également tester la lemmatisation. Ici je me suis contentée de lemmatiser en utilisant la base de données Lexique382 (j'ai téléchargé ces données sur [le site de Lexique](http://www.lexique.org/telLexique.php)), puis en réalisant une jointure.
 
-tib_lemmes %>% 
-  select(recette,word,lemme) %>% 
-  head()
+Voici un extrait de la table lexique382 (ici je ne montre que les variables qui m'intéressent ici)
+
+```{r lexique382}
+lexique382 <- read.delim("Lexique382/Lexique382.txt", encoding="UTF-8")
+lexique382 %>% 
+  select(X1_ortho,
+         X3_lemme) %>% 
+  head(n=20)
+```
+
+
+Un même mot (ou forme) peut correspondre à plusieurs lemmes (par exemple la forme "décevant" peut correspondre à la fois au lemme "décevant" -s'il est employé en tant qu'adjectif- et au lemme "décevoir" -s'il est employé en tant que participe présent-) donc pour ne pas changer la fréquence des mots ici j'ai seulement récupéré un seul des lemmes possibles (le premier apparaissant dans la table).
+
+```{r lexique382_un_lemme_par_forme}
+prend_premier=function(x){x[1]}
+lexique382 <- lexique382 %>% 
+  select(word= X1_ortho,
+         lemme= X3_lemme) %>% 
+  group_by(word) %>% 
+  summarise(lemme=prend_premier(lemme)) %>% 
+  distinct()
+```
+
+```{r lemmatisation}
+tib_mots=left_join(tib_mots,
+                   lexique382,
+                   by="word")
+
 ```
 
 ## Sentiments
 
+J'associe aux mots une polarité positive ou négative
+
+```{r}
+tib_mots_polarite <- tib_mots %>%
+    left_join(proust_sentiments()) 
+
+tib_mots_polarite  %>%
+  group_by(word,polarity) %>% 
+  summarise(n=n()) %>% 
+  arrange(desc(n))
+```
+
+Dans le cas des commentaires Marmiton, je trouve que l'association des mots à un "sentiment" ou une "polarité" ne fonctionne pas très bien... Par exemple "gâteau", "recette" et "sucre" sont censés être positifs... autant dire que les commentaires ressortent tous comme étant très positifs...
+
+(Mais je voulais quand-même vous montrer ce qu'il était possible de faire... Pour un vocabulaire un peu moins spécifique et en ayant une problématique un peu mieux définie ça peut peut-être donner des résultats intéressants ;-) )
+
 # Occurrences et visualisation
 
-## Fréquence d'occurrence des ingrédients
+## Fréquence d'occurrence des mots
+
+Pour passer maintenant aux visualisations les plus "classiques", j'ai besoin de calculer les fréquences d'occurrence des mots, et de trier pour n'en garder qu'une partie... (sinon les graphiques seront clairement surchargés!). 
+
+Je fais cela à la fois sur les mots des ingrédients (= sur les ingrédients => `tib_ingredients`) et sur les mots des commentaires (=> `tib_commentaires`). Heureusement dplyr me permet de ne faire qu'une bouchée de ce calcul.
+
+### Ingredients
 
 ```{r freq_ingredients}
 freq_ingredients=tib_ingredients %>% 
   group_by(ingredients) %>% 
-  summarise(freq=n()) %>% 
-  filter(freq>5) %>% 
+  summarise(freq=n())  %>% 
   arrange(desc(freq))
 head(freq_ingredients)
 ```
 
+### Commentaires
+
+```{r freq_mots}
+freq_mots=tib_mots %>% 
+  group_by(word) %>% 
+  summarise(freq=n()) %>% 
+  arrange(desc(freq))
+head(freq_mots)
+```
+
 ## Nuage de mots
 
-```{r wordcloud}
-library(wordcloud)
-wordcloud(words=freq_ingredients$ingredients,
-          freq=freq_ingredients$frequence)
+### Ingrédients
+
+La fonction "wordcloud" attend en arguments d'entrée deux vecteurs: les mots d'une part, et leur fréquence d'autre part.
+
+```{r freq_ingredients_wordcloud}
+top_100_ingredients <- top_n(freq_ingredients,100,freq)
+wordcloud(words=top_100_ingredients$ingredients,
+          freq= top_100_ingredients$freq)
+```
+
+### Commentaires
+
+```{r freq_mots_wordcloud}
+top_100_mots=top_n(freq_mots,100,freq)
+wordcloud(words=top_100_mots$word,
+          freq=top_100_mots$freq)
 ```
 
 ## Barplots
 
+Si on veut être en mesure de lire plus directement les fréquences d'occurrence des mots, alors on peut opter pour un graphique plus classique. Par la grâce de ggplot2! hop! un barplot!
+
+### Ingrédients
+
 ```{r freq_ingredients_barplot, fig.width=6, fig.height=6}
-ggplot(freq_ingredients, aes(x=forcats::fct_reorder(ingredients,freq), y=freq))+
+top_25_ingredients=top_n(freq_ingredients,25, freq)
+ggplot(top_25_ingredients, aes(x=forcats::fct_reorder(ingredients,freq), y=freq))+
   geom_bar(stat="identity")+
   coord_flip()+
   xlab("ingrédient")
 ```
 
+### Commentaires
+
+```{r freq_mots_barplot, fig.width=6, fig.height=10}
+top_25_mots=top_n(freq_mots, 25, freq)
+ggplot(top_n(freq_mots, 25, freq), aes(x=forcats::fct_reorder(words,freq), y=freq))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  xlab("mot des commentaires")
+```
+
 # Co-occurences
 
-```{r}
-lemmes=tib_mots %>% 
-  group_by(word) %>% 
-  summarise(n=n()) %>% 
-  filter(n>20) %>% 
-  arrange(desc(n))
+On va maintenant s'intéresser aux co-occurrences de mots. Par exemple, intéressons-nous à la façon dont deux mots tendent à apparaître dans un même commentaire. 
 
-truc=tib_comments_word %>%
-  group_by(recette,word) %>% 
-  summarise(n=n()) %>% 
-  bind_tf_idf(word,recette,n)
-```
+La librairie `widyr` permet d'obtenir les fréquences de co-occurrence et les corrélations deux à deux...
 
 ```{r}
-library(widyr)
-word_pairs=tib_mots %>% 
-  pairwise_count(word,recette,sort=TRUE) %>% 
-  filter(n>30)
+tib_mots_filtree=tib_mots %>% 
+  group_by(lemme) %>%
+  mutate(n=n()) %>% 
+  filter(n>50) %>% 
+  ungroup() 
+
+mots_paires=tib_mots_filtree %>%
+  pairwise_count(lemme,recette,sort=TRUE) 
+
+mots_cors= tib_mots_filtree %>% 
+  pairwise_cor(lemme,recette,sort=TRUE)
+
+mots_paires=left_join(mots_paires,
+                      mots_cors,
+                      by=c("item1","item2"))
+```
+
+## Graphe représentant corrélations entre mots
+
+On filtre les données `tib_mots_paires` pour écarter les paires qui ont soit une faible co-occurrence, soit une faible corrélation. Cela va nous permettre de construire un graphe plus lisible...
+
+En effet, l'ensemble des paires listées dans le tableau `tib_graph` est pris en compte pour construire le layout du graphe... Pour le coup j'ai préféré utiliser les lemmes pour éviter de me retrouver avec des liens entre "bananes" et "banane", "ajouté" et "ajouter", etc. 
+
+```{r, fig.width=8, fig.height=8}
+tib_graph=mots_paires %>%
+   filter(n>20,
+          correlation>0.3,
+          item1!="recette",
+          item2!="recette") %>%
+   select(-n)
+
+graph_from_data_frame(tib_graph) %>%
+   ggraph(layout = "fr") +
+   geom_edge_link(aes(edge_alpha = correlation),
+                  show.legend = FALSE) +
+   geom_node_point(color = "lightblue", size = 5) +
+   geom_node_text(aes(label = name), repel = TRUE) +
+   theme_void()
 ```
 
 
-# Corrélations entre mots
-
-```{r}
-word_cors= tib_comments_word %>% 
-  group_by(word) %>% 
-  filter(n()>50) %>% 
-  pairwise_cor(word,recette,sort=TRUE)
-```
-
-# Graphe représentant corrélations entre mots
-```{r}
-truc=tib_ingredients %>% 
-  group_by(ingredients) %>% 
-  filter(n()>3) %>% 
-  pairwise_cor(ingredients,recette,sort=TRUE)
-mygraph=truc %>%
-  filter(correlation > .2) %>%
-  graph_from_data_frame() %>%
-  ggraph(layout = "fr") +
-  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
-  geom_node_point(color = "lightblue", size = 5) +
-  geom_node_text(aes(label = name), repel = TRUE) +
-  theme_void()
-plot(mygraph)
-```
-
-
-
-
-
-```{r graph}
- mygraph=word_cors %>%
-  filter(correlation > .8) %>%
-  graph_from_data_frame() %>%
-  ggraph(layout = "fr") +
-  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
-  geom_node_point(color = "lightblue", size = 5) +
-  geom_node_text(aes(label = name), repel = TRUE) +
-  theme_void()
-plot(mygraph)
-```
