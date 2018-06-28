@@ -1,0 +1,376 @@
+---
+title: "Mitonner des beaux petits graphiques à partir des données textuelles du site Marmiton"
+output: html_document
+---
+
+Dans ce projet je vais
+
+- sélectionner au hasard parmi les environ 9000 recettes de dessert que comptent le site Marmiton, 1000 fiches-recettes
+- scraper certaines informations issues de ces fiche-recettes (notamment, les informations concernant les ingrédients de la recette et les commentaires)
+
+# Packages
+
+Voici les packages dont j'aurai besoin pour ce projet
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(purrr)
+library(rvest)
+library(tidytext)
+library(proustr)
+library(wordcloud)
+```
+
+# Web scraping et mise en forme des données
+
+## Récupérer les urls des listes de recettes de desserts
+
+Si je fais une recherche sur Marmiton pour trouver les fiches-recettes des dessert, il me renvoie une liste de plusieurs pages dont les urls sont de la forme:
+
+
+- "http://www.marmiton.org/recettes/recherche.aspx?aqt=dessert&dt=dessert&pht=1"
+- "http://www.marmiton.org/recettes/recherche.aspx?aqt=dessert&dt=dessert&pht=1&start=12"
+- "http://www.marmiton.org/recettes/recherche.aspx?aqt=dessert&dt=dessert&pht=1&start=24"
+- "http://www.marmiton.org/recettes/recherche.aspx?aqt=dessert&dt=dessert&pht=1&start=36"
+etc.
+
+Je vais donc commencer par créer un vecteur `pages` qui liste l'ensemble des pages, qui elles-mêmes listent les recettes de dessert:
+
+```{r, cache=TRUE}
+pages <- str_c("http://www.marmiton.org/recettes/recherche.aspx?aqt=dessert&dt=dessert&pht=1",
+               c("",str_c("&start=",seq(12,9000,by=12))))
+pages[1:4]
+```
+
+## Récupérer les urls des recettes de desserts
+
+Je définis une fonction (`get_recettes()`) qui pour chaque page listée ci-dessus, me récupère l'ensemble des urls pointant vers les recettes: 
+
+```{r recup_recettes, echo=FALSE, cache=TRUE}
+recup_recettes <- function(page){
+  html <- read_html(page)
+  urls <- html  %>% 
+    html_nodes("body") %>% 
+    html_nodes(".recipe-card") %>% 
+    html_attrs() %>%
+    map(.f=function(x){x[[which(names(x)=="href")]]}) %>% 
+    unlist()
+  tib=tibble(urls=urls)
+  return(tib)
+}
+```
+
+J'applique ensuite itérativement la fonction `get_recettes()` à l'ensemble des éléments du vecteur `pages` défini ci-dessus.
+
+Pour ce tuto, je vais me contenter de 1000 recettes (parmi environ 9000) tirées au hasard...
+
+Le résultat est enregistré dans le fichier "data/recettes_sample.csv".
+
+```{r applique_recup_recettes}
+if(!file.exists("data/recettes_sample.csv")){
+  recettes <- pages%>%
+    map(.f=recup_recettes) %>%
+    bind_rows()
+  set.seed(33)
+  recettes_sample <- sample_n(recettes, 1000)
+  write_csv(recettes_sample,"data/recettes_sample.csv")
+}
+recettes_sample <- read_csv("data/recettes_sample.csv")
+head(recettes_sample)
+```
+
+## Récupérer la liste des ingrédients
+
+On définit maintenant la fonction `recup_ingredients()` qui permet, à partir de l'url d'une recette, de récupérer un tableau qui liste les ingrédients.
+
+```{r recup_ingredients, cache=TRUE}
+recup_ingredients <- function(url){
+    html<-read_html(url)
+    # Recupere titre
+    recette <- html %>%
+      html_nodes(".main-title") %>% 
+      html_text()
+    # Recupere quantites
+    quantites <- html %>%
+      html_nodes(".recipe-ingredient-qt")  %>%
+      html_text()
+    # Recupere ingredients
+    ingredients <- html %>%
+      html_nodes(".ingredient") %>% 
+      html_text()
+    # Rassemble le tout dans une tibble 
+    tib <- bind_cols(url=rep(url,length(ingredients)),
+                   recette=rep(recette, length(ingredients)),
+                   quantites=quantites,
+                   ingredients=ingredients)
+    return(tib)
+}
+
+recup_ingredients(recettes_sample$urls[24]) %>%
+  select(-url)
+```
+
+On applique alors itérativement la fonction `recup_ingredients` à l'ensemble des recettes listées dans `recettes_sample`.
+
+Le résultat est enregistré dans le fichier "data/tib_ingredients.csv".
+
+```{r applique_recup_ingredients}
+if(!file.exists("data/tib_ingredients.csv")){
+  tib_ingredients <- map(recettes_sample$urls,
+                      .f=recup_ingredients) %>% 
+    bind_rows()
+  write_csv(tib_ingredients,"data/tib_ingredients.csv")
+}
+tib_ingredients <- read_csv("data/tib_ingredients.csv")
+
+select(tib_ingredients,-url) %>%
+  head(n=15)
+```
+
+## Nettoyer les ingrédients
+
+Je nettoie la table `tib_ingredients` de manière à isoler les unités de mesure de l'ingrédient lui-même...
+
+```{r clean_tib_ingredients}
+tib_ingredients=tib_ingredients %>% 
+  mutate(ingredients=str_replace(ingredients,"cuillère à soupe","CàS")) %>% 
+  mutate(ingredients=str_replace(ingredients,"cuillère à café","CàC"))
+
+decompo=str_match(tib_ingredients$ingredients,
+                  "(\\w?g|\\w?l|cuillère|CàS|CàC|pot|verre|boîte|pincée|flacon|sachet|feuille|goutte) (de\\s|d\\')(.*)")
+tib_ingredients=bind_cols(tib_ingredients,
+                          unite=decompo[,2]) %>%
+  mutate(ingredients=case_when(!is.na(decompo[,4])~decompo[,4],
+                               is.na(decompo[,4])~ingredients))
+
+tib_ingredients %>% 
+  select(-url) %>% 
+  head()
+  
+```
+
+## Récupérer la liste des commentaires
+
+On définit maintenant la fonction `recup_commentaires()` qui permet, à partir de l'url d'une recette, de récupérer un tableau qui liste les commentaires (s'il y en a).
+
+```{r recup_commentaires}
+recup_commentaires <- function(url){
+  url <- str_replace(url,"recettes/recette_","recettes/recette-avis_")
+  html <- url %>%
+    read_html()
+  comments <- html %>% html_nodes(".commentaire")
+  if(length(comments)!=0){
+      auteur=comments %>% html_nodes("strong") %>% 
+        html_text() %>% 
+        unlist()
+      date <- comments %>% html_nodes(".infoCom") %>%
+        html_text() %>% 
+        str_extract("\\d{2}/\\d{2}/\\d{2}") %>% 
+        unlist()
+      note <- comments %>% html_nodes(".bulle") %>%
+        html_text()%>%
+        str_replace("/5","") %>% 
+        unlist()
+      texte <- comments %>%
+        html_nodes(".txtCommentaire") %>%
+        html_text() %>% 
+        unlist()
+      tib=bind_cols(texte=texte,
+                    auteur=auteur,
+                    date=date,
+                    note=note)
+      recette=html %>% 
+        html_nodes(".fn") %>% 
+        html_text() 
+      tib=bind_cols(url=rep(url,nrow(tib)),
+                    recette=rep(recette,nrow(tib)),
+                    tib)
+  }else{tib=NULL}      
+  return(tib)
+}
+```
+
+On applique alors itérativement la fonction `recup_commentaires` à l'ensemble des recettes listées dans `recettes_sample`.
+
+Le résultat est enregistré dans le fichier "data/tib_commentaires.csv".
+
+```{r applique_recup_commentaires}
+if(!file.exists("data/tib_commentaires.csv")){
+  tib_commentaires <- map(recettes_sample$urls,recup_commentaires) %>% 
+    bind_rows()
+  write_csv(tib_commentaires,"data/tib_commentaires.csv")
+}
+tib_commentaires <- read_csv("data/tib_commentaires.csv")
+
+select(tib_ingredients,-url) %>%
+  head(n=15)
+```
+
+## Nettoyer la table des commentaires
+
+Je nettoie la table `tib_commentaires`:
+
+
+```{r clean_tib_commentaires}
+tib_commentaires <- tib_commentaires %>%
+  mutate(texte=str_replace_all(texte,"\\r\\n\\s*","_")) %>% 
+  mutate(texte=str_extract(texte,"[[^_]]*(?=_$)")) %>% 
+  mutate(texte=str_replace_all(texte,"\\'|’"," "))
+```
+
+# Traitement du langage naturel (sur les commentaires)
+
+
+
+## Tokenization
+
+```{r tokenize_instructions}
+tib_mots <- unnest_tokens(tib_commentaires,
+                          output="word",
+                          input="texte")
+
+tib_mots %>% 
+  select(recette,word) %>% 
+  head()
+```
+
+
+## Commentaires: mots-outils
+
+```{r}
+tib_mots <- anti_join(tib_mots,
+                      proust_stopwords()) %>% 
+  filter(!str_detect(word,"\\d+"))
+
+tib_mots %>% 
+  select(recette,word) %>% 
+  head()
+```
+
+## Stemming
+
+```{r}
+tib_racines <-  pr_stem_words(tib_mots,
+                              word)
+tib_racines %>% 
+  select(recette,word) %>% 
+  head()
+```
+
+## Lemmatisation
+
+```{r}
+Lexique382=read.delim("Lexique382/Lexique382.txt", encoding="UTF-8")
+Lexique382=select(Lexique382,
+                  word= X1_ortho,
+                  lemme= X3_lemme,
+                  type= X4_cgram)
+print(sample_n(Lexique382,20))
+tib_lemmes=left_join(tib_mots,
+                     Lexique382,
+                     by="word") %>% 
+  group_by(recette,word) %>% 
+  mutate(lemme=lemme[1]) %>% 
+  distinct()
+
+tib_lemmes %>% 
+  select(recette,word,lemme) %>% 
+  head()
+```
+
+## Sentiments
+
+# Occurrences et visualisation
+
+## Fréquence d'occurrence des ingrédients
+
+```{r freq_ingredients}
+freq_ingredients=tib_ingredients %>% 
+  group_by(ingredients) %>% 
+  summarise(freq=n()) %>% 
+  filter(freq>5) %>% 
+  arrange(desc(freq))
+head(freq_ingredients)
+```
+
+## Nuage de mots
+
+```{r wordcloud}
+library(wordcloud)
+wordcloud(words=freq_ingredients$ingredients,
+          freq=freq_ingredients$frequence)
+```
+
+## Barplots
+
+```{r freq_ingredients_barplot, fig.width=6, fig.height=6}
+ggplot(freq_ingredients, aes(x=forcats::fct_reorder(ingredients,freq), y=freq))+
+  geom_bar(stat="identity")+
+  coord_flip()+
+  xlab("ingrédient")
+```
+
+# Co-occurences
+
+```{r}
+lemmes=tib_mots %>% 
+  group_by(word) %>% 
+  summarise(n=n()) %>% 
+  filter(n>20) %>% 
+  arrange(desc(n))
+
+truc=tib_comments_word %>%
+  group_by(recette,word) %>% 
+  summarise(n=n()) %>% 
+  bind_tf_idf(word,recette,n)
+```
+
+```{r}
+library(widyr)
+word_pairs=tib_mots %>% 
+  pairwise_count(word,recette,sort=TRUE) %>% 
+  filter(n>30)
+```
+
+
+# Corrélations entre mots
+
+```{r}
+word_cors= tib_comments_word %>% 
+  group_by(word) %>% 
+  filter(n()>50) %>% 
+  pairwise_cor(word,recette,sort=TRUE)
+```
+
+# Graphe représentant corrélations entre mots
+```{r}
+truc=tib_ingredients %>% 
+  group_by(ingredients) %>% 
+  filter(n()>3) %>% 
+  pairwise_cor(ingredients,recette,sort=TRUE)
+mygraph=truc %>%
+  filter(correlation > .2) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  theme_void()
+plot(mygraph)
+```
+
+
+
+
+
+```{r graph}
+ mygraph=word_cors %>%
+  filter(correlation > .8) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
+  geom_node_point(color = "lightblue", size = 5) +
+  geom_node_text(aes(label = name), repel = TRUE) +
+  theme_void()
+plot(mygraph)
+```
