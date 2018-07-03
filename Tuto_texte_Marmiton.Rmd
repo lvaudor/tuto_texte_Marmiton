@@ -262,7 +262,6 @@ Je retire les mots vides (en français), et je filtre également les mots pour r
 tib_mots_nonvides <- anti_join(tib_mots,
                       proust_stopwords()) %>% 
   filter(!str_detect(word,"\\d+"))
-write_csv(tib_mots_nonvides,"data/tib_mots_nonvides.csv")
 
 tib_mots_nonvides %>% 
   select(recette,word) %>% 
@@ -312,7 +311,7 @@ lexique382 <- lexique382 %>%
 tib_mots_nonvides=left_join(tib_mots_nonvides,
                    lexique382,
                    by="word")
-
+write_csv(tib_mots_nonvides,"data/tib_mots_nonvides.csv")
 ```
 
 ## Sentiments

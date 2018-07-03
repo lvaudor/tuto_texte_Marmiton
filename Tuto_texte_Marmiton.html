@@ -395,7 +395,6 @@ tib_mots %&gt;%
 <pre class="r"><code>tib_mots_nonvides &lt;- anti_join(tib_mots,
                       proust_stopwords()) %&gt;% 
   filter(!str_detect(word,&quot;\\d+&quot;))
-write_csv(tib_mots_nonvides,&quot;data/tib_mots_nonvides.csv&quot;)
 
 tib_mots_nonvides %&gt;% 
   select(recette,word) %&gt;% 
@@ -468,7 +467,8 @@ lexique382 &lt;- lexique382 %&gt;%
   distinct()</code></pre>
 <pre class="r"><code>tib_mots_nonvides=left_join(tib_mots_nonvides,
                    lexique382,
-                   by=&quot;word&quot;)</code></pre>
+                   by=&quot;word&quot;)
+write_csv(tib_mots_nonvides,&quot;data/tib_mots_nonvides.csv&quot;)</code></pre>
 </div>
 <div id="sentiments" class="section level2">
 <h2>Sentiments</h2>
