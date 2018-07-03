@@ -427,15 +427,16 @@ tib_mots_filtree=tib_mots_nonvides %>%
   filter(n>50) %>% 
   ungroup() 
 
-mots_paires=tib_mots_filtree %>%
+mots_comptes=tib_mots_filtree %>%
   pairwise_count(lemme,recette,sort=TRUE) 
 
 mots_cors= tib_mots_filtree %>% 
   pairwise_cor(lemme,recette,sort=TRUE)
 
-mots_paires=left_join(mots_paires,
+mots_paires=left_join(mots_comptes,
                       mots_cors,
                       by=c("item1","item2"))
+write_csv(mots_paires,"data/mots_paires.csv")
 ```
 
 ## Graphe représentant corrélations entre mots

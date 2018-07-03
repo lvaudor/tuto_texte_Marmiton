@@ -596,15 +596,16 @@ ggplot(top_25_mots, aes(x=forcats::fct_reorder(word,freq), y=freq))+
   filter(n&gt;50) %&gt;% 
   ungroup() 
 
-mots_paires=tib_mots_filtree %&gt;%
+mots_comptes=tib_mots_filtree %&gt;%
   pairwise_count(lemme,recette,sort=TRUE) 
 
 mots_cors= tib_mots_filtree %&gt;% 
   pairwise_cor(lemme,recette,sort=TRUE)
 
-mots_paires=left_join(mots_paires,
+mots_paires=left_join(mots_comptes,
                       mots_cors,
-                      by=c(&quot;item1&quot;,&quot;item2&quot;))</code></pre>
+                      by=c(&quot;item1&quot;,&quot;item2&quot;))
+write_csv(mots_paires,&quot;data/mots_paires.csv&quot;)</code></pre>
 <div id="graphe-representant-correlations-entre-mots" class="section level2">
 <h2>Graphe représentant corrélations entre mots</h2>
 <p>On filtre les données <code>tib_mots_paires</code> pour écarter les paires qui ont soit une faible co-occurrence, soit une faible corrélation. Cela va nous permettre de construire un graphe plus lisible…</p>
