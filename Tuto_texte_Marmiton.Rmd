@@ -13,7 +13,7 @@ Dans ce projet je vais
 Voici les packages dont j'aurai besoin pour ce projet
 
 ```{r setup, message=FALSE, warning=FALSE}
-knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE)
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, cache=TRUE)
 library(tidyverse)
 library(purrr)
 library(rvest)
@@ -40,7 +40,7 @@ etc.
 
 Je vais donc commencer par créer un vecteur `pages` qui liste l'ensemble des pages, qui elles-mêmes listent les recettes de dessert:
 
-```{r pages, cache=TRUE}
+```{r pages}
 pages <- str_c("http://www.marmiton.org/recettes/recherche.aspx?aqt=dessert&dt=dessert&pht=1",
                c("",str_c("&start=",seq(12,9000,by=12))))
 pages[1:4]
@@ -50,7 +50,7 @@ pages[1:4]
 
 Je définis une fonction (`get_recettes()`) qui pour chaque page listée ci-dessus, me récupère l'ensemble des urls pointant vers les recettes: 
 
-```{r recup_recettes, echo=FALSE, cache=TRUE}
+```{r recup_recettes, echo=FALSE}
 recup_recettes <- function(page){
   html <- read_html(page)
   urls <- html  %>% 
@@ -87,7 +87,7 @@ head(recettes_sample)
 
 On définit maintenant la fonction `recup_ingredients()` qui permet, à partir de l'url d'une recette, de récupérer un tableau qui liste les ingrédients.
 
-```{r recup_ingredients, cache=TRUE}
+```{r recup_ingredients}
 recup_ingredients <- function(url){
     html<-read_html(url)
     # Recupere titre
@@ -194,19 +194,13 @@ recup_commentaires <- function(url){
 }
 ```
 
-On applique alors itérativement la fonction `recup_commentaires` à l'ensemble des recettes listées dans `recettes_sample`.
-
-Le résultat est enregistré dans le fichier "data/tib_commentaires.csv".
+On applique alors itérativement la fonction `recup_commentaires()` à l'ensemble des recettes listées dans `recettes_sample`.
 
 ```{r applique_recup_commentaires}
-if(!file.exists("data/tib_commentaires.csv")){
-  tib_commentaires <- map(recettes_sample$urls,recup_commentaires) %>% 
+tib_commentaires <- map(recettes_sample$urls,recup_commentaires) %>% 
     bind_rows()
-  write_csv(tib_commentaires,"data/tib_commentaires.csv")
-}
-tib_commentaires <- read_csv("data/tib_commentaires.csv")
 
-select(tib_ingredients,-url) %>%
+select(tib_commentaires,-url) %>%
   head(n=15)
 ```
 
@@ -220,13 +214,25 @@ Les trois étapes de nettoyage correspondent à
 - extraction des caractères (tous caractères sauf "_", zéro à plusieurs fois) suivis par un "\_" et la fin de la chaîne de caractère
 - remplacement par un espace des apostrophes ("'" ou "’")
 
+J'écris cette table `tib_commentaires` "clean" dans mon dossier data.
 
 ```{r clean_tib_commentaires}
 tib_commentaires <- tib_commentaires %>%
   mutate(texte=str_replace_all(texte,"\\r\\n\\s*","_")) %>% 
   mutate(texte=str_extract(texte,"[[^_]]*(?=_$)")) %>% 
   mutate(texte=str_replace_all(texte,"\\'|’"," "))
+
+write_csv(tib_commentaires,"data/tib_commentaires.csv")
 ```
+
+Je vais aussi juste en écrire une (beaucoup) plus petite pour les exos Datacamp...
+
+```{r}
+write_csv(sample_n(tib_commentaires,50),"data/ptib_commentaires.csv")
+```
+
+
+
 
 # Traitement du langage naturel (sur les commentaires)
 
@@ -240,6 +246,7 @@ tib_mots <- unnest_tokens(tib_commentaires,
                           output="word",
                           input="texte",
                           to_lower=TRUE)
+write_csv(tib_mots,"data/tib_mots.csv")
 
 tib_mots %>% 
   select(recette,word) %>% 
@@ -252,11 +259,12 @@ tib_mots %>%
 Je retire les mots vides (en français), et je filtre également les mots pour retirer tous les nombres (pattern `\\d`).
 
 ```{r stopwords}
-tib_mots <- anti_join(tib_mots,
+tib_mots_nonvides <- anti_join(tib_mots,
                       proust_stopwords()) %>% 
   filter(!str_detect(word,"\\d+"))
+write_csv(tib_mots_nonvides,"data/tib_mots_nonvides.csv")
 
-tib_mots %>% 
+tib_mots_nonvides %>% 
   select(recette,word) %>% 
   head()
 ```
@@ -266,7 +274,7 @@ tib_mots %>%
 Je teste la racinisation des mots de `tib_mots`:
 
 ```{r stemming}
-tib_racines <-  pr_stem_words(tib_mots,
+tib_racines <-  pr_stem_words(tib_mots_nonvides,
                               word)
 tib_racines %>% 
   select(recette,word) %>% 
@@ -301,7 +309,7 @@ lexique382 <- lexique382 %>%
 ```
 
 ```{r lemmatisation}
-tib_mots=left_join(tib_mots,
+tib_mots_nonvides=left_join(tib_mots_nonvides,
                    lexique382,
                    by="word")
 
@@ -312,11 +320,11 @@ tib_mots=left_join(tib_mots,
 J'associe aux mots une polarité positive ou négative
 
 ```{r}
-tib_mots_polarite <- tib_mots %>%
-    left_join(proust_sentiments()) 
+tib_mots_polarite <- tib_mots_nonvides %>%
+    left_join(proust_sentiments(), by=c("lemme"="word")) 
 
 tib_mots_polarite  %>%
-  group_by(word,polarity) %>% 
+  group_by(lemme,polarity) %>% 
   summarise(n=n()) %>% 
   arrange(desc(n))
 ```
@@ -346,18 +354,28 @@ head(freq_ingredients)
 ### Commentaires
 
 ```{r freq_mots}
-freq_mots=tib_mots %>% 
+freq_mots=tib_mots_nonvides %>% 
   group_by(word) %>% 
   summarise(freq=n()) %>% 
   arrange(desc(freq))
 head(freq_mots)
 ```
 
+```{r}
+tib_mots_frequents <- tib_mots_nonvides %>% 
+  group_by(word) %>% 
+  mutate(freq=n()) %>% 
+  filter(freq>100)
+write_csv(tib_mots_frequents,"data/tib_mots_frequents.csv")
+```
+
+
+
 ## Nuage de mots
 
 ### Ingrédients
 
-La fonction "wordcloud" attend en arguments d'entrée deux vecteurs: les mots d'une part, et leur fréquence d'autre part.
+La fonction `wordcloud()` attend en arguments d'entrée deux vecteurs: les mots d'une part, et leur fréquence d'autre part.
 
 ```{r freq_ingredients_wordcloud}
 top_100_ingredients <- top_n(freq_ingredients,100,freq)
@@ -404,7 +422,7 @@ On va maintenant s'intéresser aux co-occurrences de mots. Par exemple, intéres
 La librairie `widyr` permet d'obtenir les fréquences de co-occurrence et les corrélations deux à deux...
 
 ```{r}
-tib_mots_filtree=tib_mots %>% 
+tib_mots_filtree=tib_mots_nonvides %>% 
   group_by(lemme) %>%
   mutate(n=n()) %>% 
   filter(n>50) %>% 
