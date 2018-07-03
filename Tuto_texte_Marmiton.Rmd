@@ -406,7 +406,7 @@ ggplot(top_25_ingredients, aes(x=forcats::fct_reorder(ingredients,freq), y=freq)
 
 ### Commentaires
 
-```{r freq_mots_barplot, fig.width=6, fig.height=10}
+```{r freq_mots_barplot, fig.width=6, fig.height=6}
 top_25_mots=top_n(freq_mots, 25, freq)
 ggplot(top_25_mots, aes(x=forcats::fct_reorder(word,freq), y=freq))+
   geom_bar(stat="identity")+
